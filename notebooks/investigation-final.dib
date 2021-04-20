@@ -1,0 +1,185 @@
+#!markdown
+
+# Get ready
+Download nuget packages and extensions to investigate
+
+#!csharp
+
+#r "nuget:Microsoft.DotNet.Interactive.ExtensionLab, 1.0.0-beta.21215.5"
+
+#!markdown
+
+# Lets load user feedback
+Using `#!value` we laod the feedback and get the list of urls with probelms. Net we load is and explore as table with Nteract
+
+#!csharp
+
+#!value --name user_feedback --from-file ./report_export.json
+
+#!csharp
+
+#!share --from value user_feedback
+
+#!csharp
+
+using System.Text.Json;
+var user_feedback_json = JsonDocument.Parse(user_feedback);
+
+#!csharp
+
+user_feedback_json.ExploreWithNteract()
+
+#!markdown
+
+# Server logs
+Using `#!value` we load the server logs and go to see what is going on using the explorers
+
+#!csharp
+
+#!value --name user_feedback --from-file ./report_export.json
+
+#!value --name server_logs --from-file ./serverlog.json
+
+#!csharp
+
+#!share --from value user_feedback
+
+#!share --from value server_logs
+
+#!csharp
+
+using System.Text.Json;
+
+var user_feedback_json = JsonDocument.Parse(user_feedback);
+var server_logs_json = JsonDocument.Parse(server_logs);
+
+#!csharp
+
+user_feedback_json.ExploreWithNteract().Display();
+
+#!csharp
+
+server_logs_json.ExploreWithNteract().Display();
+
+#!markdown
+
+# Data problem?
+We can't spot anything here, so we need to see if there is anything that might cause rendering issues.
+We use `#!connect` to connect to the database.
+
+We try to get a picture by quering products and joining with some metadata like the categories.
+Table view is not too informative, using EF context we look at that from SandDance
+
+#!csharp
+
+#r "nuget:Microsoft.DotNet.Interactive.SqlServer,*-*"
+
+#!csharp
+
+#!connect mssql --kernel-name adventureworks "Persist Security Info=False; Integrated Security=true; Initial Catalog=AdventureWorks2019; Server=localhost"  --create-dbcontext 
+
+#!csharp
+
+#!sql-adventureworks
+SELECT product.ProductID
+,product.Name
+,product.ProductNumber
+,product.ProductSubcategoryID
+,sub.ProductSubcategoryID
+,sub.ProductCategoryID
+,CategoryName = sub.Name
+
+FROM AdventureWorks2019.Production.Product AS product
+INNER JOIN AdventureWorks2019.Production.ProductSubcategory AS sub
+ON product.ProductSubcategoryID = sub.ProductSubcategoryID
+
+#!csharp
+
+var reportedProducts = user_feedback_json.RootElement.EnumerateArray()
+.Select(e => int.Parse( e.GetProperty("url").GetString().Split('/').Last() ))
+.Distinct()
+.ToHashSet();
+
+#!csharp
+
+var data =  from product in (adventureworks.Product.Include(r => r.ProductSubcategory))
+    where reportedProducts.Contains( product.ProductId ) && product.ProductSubcategory != null
+    select new {
+        product.ProductId,
+        product.Name,
+        Category = product.ProductSubcategory.Name,
+    };
+
+#!csharp
+
+data.ExploreWithSandDance().Display();
+
+#!markdown
+
+# Nothing ...
+So let's see if we get any problem related to comments sizes or count on those products
+
+#!csharp
+
+var data =  from review in (adventureworks.ProductReview.Include(r => r.Product).Include(r => r.Product.ProductSubcategory))
+    where reportedProducts.Contains( review.Product.ProductId ) && review.Comments != null && review.Product.ProductSubcategory != null
+    select new {
+        review.Comments.Length,
+        review.Product.ProductId,
+        review.Product.Name,
+        Category = review.Product.ProductSubcategory.Name
+    };
+
+#!csharp
+
+data.ExploreWithSandDance().Display();
+
+#!csharp
+
+var data =  from review in (adventureworks.ProductReview.Include(r => r.Product).Include(r => r.Product.ProductSubcategory))
+    where reportedProducts.Contains( review.Product.ProductId ) && review.Comments != null && review.Product.ProductSubcategory != null
+    select new {
+        review.Comments.Length,
+        review.Product.ProductId,
+        review.Product.Name,
+        Category = review.Product.ProductSubcategory.Name,
+        review.Comments
+    };
+
+#!csharp
+
+data.ExploreWithSandDance().Display();
+
+#!markdown
+
+# Looks strange 
+Why do we see a cluster of comments with exactly same lenght?
+
+#!csharp
+
+data.Where(d => d.CommentLength == 50).Select(d => new { d.ProductId, d.Comments }).ExploreWithNteract()
+
+#!markdown
+
+# Oh my ....
+Let's create a filter on all data and let's see how much bigger this could actually be.
+
+#!csharp
+
+var data =  from review in (adventureworks.ProductReview.Include(r => r.Product).Include(r => r.Product.ProductSubcategory))
+    where review.Comments != null && review.Comments.Contains("<script")
+    select new {
+        review.Comments.Length,
+        review.Product.ProductId,
+        review.Product.Name,
+        Category = review.Product.ProductSubcategory.Name,
+        review.Comments
+    };
+
+#!csharp
+
+data.Count()
+
+#!markdown
+
+![ppap](https://media4.giphy.com/media/CEF7ocyS0C9q/giphy.gif)
